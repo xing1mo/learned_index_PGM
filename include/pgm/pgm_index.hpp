@@ -78,6 +78,7 @@ protected:
     std::vector<Segment> segments;      ///< The segments composing the index.
     std::vector<size_t> levels_offsets; ///< The starting position of each level in segments[], in reverse order.
 
+    // 对每一层构造段，对于数据[first,last)
     template<typename RandomIt>
     static void build(RandomIt first, RandomIt last,
                       size_t epsilon, size_t epsilon_recursive,
@@ -114,10 +115,11 @@ protected:
             return std::pair<K, size_t>(x + flag, i);
         };
         auto out_fun = [&](auto cs) { segments.emplace_back(cs); };
+        // 创建最底层段
         last_n = build_level(epsilon, in_fun, out_fun);
-        levels_offsets.push_back(levels_offsets.back() + last_n + 1);
+        levels_offsets.push_back(levels_offsets.back() + last_n + 1);//每一层的偏移量,相减表示这一层有多少段
 
-        // Build upper levels
+        // Build upper levels，创建上层段
         while (epsilon_recursive && last_n > 1) {
             auto offset = levels_offsets[levels_offsets.size() - 2];
             auto in_fun_rec = [&](auto i) { return std::pair<K, size_t>(segments[offset + i].key, i); };

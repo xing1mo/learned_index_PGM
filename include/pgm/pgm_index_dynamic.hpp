@@ -65,6 +65,7 @@ class DynamicPGMIndex {
     uint8_t ceil_log_base(size_t n) const { return (ceil_log2(n) + ceil_log2(base) - 1) / ceil_log2(base); }
     constexpr static uint8_t ceil_log2(size_t n) { return n <= 1 ? 0 : sizeof(long long) * 8 - __builtin_clzll(n - 1); }
 
+    // 在buffer中的insertion_point插入new_item，并将target以前所有数据都合并到target层，数据总数为size_hint
     void pairwise_merge(const Item &new_item,
                         uint8_t target,
                         size_t size_hint,
@@ -73,6 +74,7 @@ class DynamicPGMIndex {
         Level tmp_b(size_hint + level(target).size());
 
         // Insert new_item in sorted order in the first level
+        // 貌似是将min_level这一层和new_item都插入到了tmp_a这一层中
         auto alternate = true;
         auto it = std::move(level(min_level).begin(), insertion_point, tmp_a.begin());
         *it++ = new_item;
@@ -87,6 +89,7 @@ class DynamicPGMIndex {
             auto out_begin = (alternate ? tmp_b : tmp_a).begin();
             decltype(out_begin) out_end;
 
+            // 将tmp_begin与level(i)进行合并，放到out_begin后面,当合并到最后一层时物理删除已经标记删除了的数据
             auto can_delete_permanently = i == used_levels - 1;
             if (can_delete_permanently)
                 out_end = merge<true, true>(tmp_begin, tmp_end, level(i).begin(), level(i).end(), out_begin);
@@ -112,18 +115,22 @@ class DynamicPGMIndex {
     }
 
     void insert(const Item &new_item) {
+        // 在第一层二分查找插入的位置
         auto insertion_point = lower_bound_bl(level(min_level).begin(), level(min_level).end(), new_item);
+        // key相等直接插入
         if (insertion_point != level(min_level).end() && *insertion_point == new_item) {
             *insertion_point = new_item;
             return;
         }
 
+        //buffer未满直接插入
         if (level(min_level).size() < buffer_max_size) {
             level(min_level).insert(insertion_point, new_item);
             used_levels = used_levels == min_level ? min_level + 1 : used_levels;
             return;
         }
 
+        //buffer满了，寻找一个level其剩余空间足够，将该level以前所有数据插入
         size_t slots_required = buffer_max_size + 1;
         uint8_t i;
         for (i = min_level + 1; i < used_levels; ++i) {
@@ -134,7 +141,7 @@ class DynamicPGMIndex {
         }
 
         auto need_new_level = i == used_levels;
-        if (need_new_level) {
+        if (need_new_level) { //新建一层
             ++used_levels;
             levels.emplace_back();
             if (i - min_index_level >= int(pgms.size()))
@@ -158,6 +165,7 @@ public:
      * @param buffer_level determines the size of level 0, equal to the sum of base^i for i = 0, ..., buffer_level
      * @param index_level the minimum level at which an index is constructed to speed up searches
      */
+     // 构造空的level，每层存base^i个数据，最底层的min_level层作为buffer,buffer_max_size是buffer能够存储的数据总量
     DynamicPGMIndex(uint8_t base = 8, uint8_t buffer_level = 0, uint8_t index_level = 0)
         : base(base),
           min_level(buffer_level ? buffer_level : ceil_log_base(128) - (base == 2)),
@@ -190,6 +198,7 @@ public:
     DynamicPGMIndex(Iterator first, Iterator last, uint8_t base = 8, uint8_t buffer_level = 0, uint8_t index_level = 0)
         : DynamicPGMIndex(base, buffer_level, index_level) {
         size_t n = std::distance(first, last);
+        // 构造空的level
         used_levels = std::max<uint8_t>(ceil_log_base(n), min_level) + 1;
         levels.resize(std::max<uint8_t>(used_levels, 32) - min_level + 1);
         level(min_level).reserve(buffer_max_size);
@@ -202,6 +211,7 @@ public:
         }
 
         // Copy only the first of each group of pairs with same key value
+        // 初始数据都放在used_levels-1层，只放first不同的数据
         auto &target = level(used_levels - 1);
         target.resize(n);
         auto out = target.begin();
@@ -214,6 +224,7 @@ public:
         }
         target.resize(std::distance(target.begin(), out));
 
+        // 对used_levels层构造pgm_index,只有层数较高时才进行构造index
         if (has_pgm(used_levels - 1)) {
             pgms = decltype(pgms)(used_levels - min_index_level);
             pgm(used_levels - 1) = PGMType(target.begin(), target.end());

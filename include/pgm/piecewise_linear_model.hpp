@@ -35,6 +35,8 @@
 
 namespace pgm::internal {
 
+// conditional_t<flag, value1, vlaue2>
+// 根据flag的值，如果是true，取value1，如果是false，则取value2
 template<typename T>
 using LargeSigned = typename std::conditional_t<std::is_floating_point_v<T>,
                                                 long double,
@@ -92,6 +94,7 @@ public:
         lower.reserve(1u << 16);
     }
 
+    // 新增一个点，维护凸包
     bool add_point(const X &x, const Y &y) {
         if (points_in_hull > 0 && x <= last_x)
             throw std::logic_error("Points must be increasing by x.");
@@ -102,6 +105,7 @@ public:
         Point p1{x, y >= max_y - epsilon ? max_y : y + epsilon};
         Point p2{x, y <= min_y + epsilon ? min_y : y - epsilon};
 
+        // Point存放的时算法中的斜率t与截距
         if (points_in_hull == 0) {
             first_x = x;
             rectangle[0] = p1;
@@ -129,12 +133,13 @@ public:
         bool outside_line1 = p1 - rectangle[2] < slope1;
         bool outside_line2 = p2 - rectangle[3] > slope2;
 
-        if (outside_line1 || outside_line2) {
+        if (outside_line1 || outside_line2) {// 满足算法新增分段条件，增加分段
             points_in_hull = 0;
             return false;
         }
 
-        if (p1 - rectangle[1] < slope2) {
+    //没怎么看懂它的代码，大致意思是用斜率截矩的关系表示出了论文中点点之间的关系
+        if (p1 - rectangle[1] < slope2) { //分别计算两半平面与上下两半凸包的交
             // Find extreme slope
             auto min = lower[lower_start] - p1;
             auto min_i = lower_start;
@@ -186,6 +191,7 @@ public:
         return true;
     }
 
+    // points_in_hull为1表示凸包只加了第一个点对应的两半平面，每完全生成
     CanonicalSegment get_segment() {
         if (points_in_hull == 1)
             return CanonicalSegment(rectangle[0], rectangle[1], first_x);
@@ -271,6 +277,7 @@ public:
     }
 };
 
+// 对这n个点生成段,in和out处理输入输出,epsilon为误差范围
 template<typename Fin, typename Fout>
 size_t make_segmentation(size_t n, size_t epsilon, Fin in, Fout out) {
     if (n == 0)
@@ -291,36 +298,48 @@ size_t make_segmentation(size_t n, size_t epsilon, Fin in, Fout out) {
         p = next_p;
         if (!opt.add_point(p.first, p.second)) {
             out(opt.get_segment());
-            opt.add_point(p.first, p.second);
-            ++c;
+            opt.add_point(p.first, p.second); // 初始化一个新段
+            ++c; // c记录当前线程生成的段数量
         }
     }
 
-    out(opt.get_segment());
+    out(opt.get_segment()); // 最后一个段
     return ++c;
 }
 
+// 多线程生成段
 template<typename Fin, typename Fout>
 size_t make_segmentation_par(size_t n, size_t epsilon, Fin in, Fout out) {
     auto parallelism = std::min(std::min(omp_get_num_procs(), omp_get_max_threads()), 20);
+    /*
+     * omp_get_num_procs：返回系统中处理器的个数；
+     * omp_get_max_threads： 获取并行域中可用的最大的并行线程数目
+     * */
     auto chunk_size = n / parallelism;
     auto c = 0ull;
 
     if (parallelism == 1 || n < 1ull << 15)
         return make_segmentation(n, epsilon, in, out);
 
+    /*
+     * using表示别名
+     * invoke_result_t获取模板成员函数的结果类型,其中Fin是in_fun这个函数，size_t是Fin的参数列表，返回函数的返回类型
+     * */
     using X = typename std::invoke_result_t<Fin, size_t>::first_type;
     using Y = typename std::invoke_result_t<Fin, size_t>::second_type;
     using canonical_segment = typename OptimalPiecewiseLinearModel<X, Y>::CanonicalSegment;
     std::vector<std::vector<canonical_segment>> results(parallelism);
 
+    // 在#pragma omp parallel for后面加上了reduction(+:sum)，它的意思是告诉编译器：
+    // 下面的for循环你要分成多个线程跑，但每个线程都要保存变量sum的拷贝，循环结束后，所有线程把自己的sum累加起来作为最后的输出。
     #pragma omp parallel for reduction(+:c) num_threads(parallelism)
     for (auto i = 0; i < parallelism; ++i) {
         auto first = i * chunk_size;
         auto last = i == parallelism - 1 ? n : first + chunk_size;
         if (first > 0) {
+            // 结合后面的代码，类似于当两个idx的值相等时，后面相等的点直接跳过，这里多线程每个线程处理一段数据，每段最前面可能与上一段相等，直接跳过
             for (; first < last; ++first)
-                if (in(first).first != in(first - 1).first)
+                if (in(first).first != in(first - 1).first)//感觉只有在ve[first]和ve[first-1]相等时才++first
                     break;
             if (first == last)
                 continue;
@@ -334,7 +353,7 @@ size_t make_segmentation_par(size_t n, size_t epsilon, Fin in, Fout out) {
 
     for (auto &v : results)
         for (auto &cs : v)
-            out(cs);
+            out(cs); //将所有线程生成的段合并
 
     return c;
 }
